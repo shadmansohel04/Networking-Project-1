@@ -9,9 +9,11 @@
 #include <strings.h>
 #include <string.h>
 
-#define BUFLEN 256
+/* Include the header files for our features */
+#include "registration.h"
+#include "getContent.h"
 
-#include "registration.h" 
+#define BUFLEN 256
 
 int main(int argc, char **argv) {
   char host[BUFLEN];
@@ -50,11 +52,6 @@ int main(int argc, char **argv) {
     }
 
     int choice = atoi(input_buffer);
-    
-    /* Variables for case 3 */
-    char peer_ip[BUFLEN];
-    char port_str[BUFLEN];
-    int peer_port;
 
     switch(choice) {
       case 1:
@@ -63,6 +60,7 @@ int main(int argc, char **argv) {
         break;
       case 2:
         printf("\n[ Action: Searching for content... ]\n");
+        get_content(host, port);
         break;
       case 3:
         printf("\n[ Action: Downloading content... ]\n");
