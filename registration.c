@@ -2,69 +2,73 @@
 #define REGISTRATION_H
 
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <string.h>
+#include <unistd.h>
+#include <stdlib.h>
 
-struct PDU {
+#define MAX_DATA_LEN 100
+
+typedef struct {
   char type;
-  char data[100];
-};
+  char data[MAX_DATA_LEN];
+} PDU;
 
 void register_content(const char *server_ip, int server_port) {
-  int sd;
-  struct sockaddr_in server;
-  struct PDU pdu_send, pdu_recv;
-  char peer_name[BUFLEN];
-  char content_name[BUFLEN];
-  socklen_t server_len = sizeof(server);
+  int udp_sock;
+  struct sockaddr_in index_addr;
+  char peer_name[11];
+  char content_name[11];
+  PDU spdu, rpdu;
 
-  if ((sd = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
-    perror("Can't create UDP socket");
+  /* Placeholder port until TCP download logic is implemented later */
+  int my_tcp_port = 8080; 
+
+  if ((udp_sock = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
+    perror("Cannot create UDP socket");
     return;
   }
 
-  bzero((char *)&server, sizeof(struct sockaddr_in));
-  server.sin_family = AF_INET;
-  server.sin_port = htons(server_port);
-  inet_aton(server_ip, &server.sin_addr);
+  bzero((char *)&index_addr, sizeof(struct sockaddr_in));
+  index_addr.sin_family = AF_INET;
+  index_addr.sin_port = htons(server_port);
+  inet_aton(server_ip, &index_addr.sin_addr);
 
-  while (1) {
+  int registered = 0;
+
+  while (registered == 0) {
     printf("Enter Peer Name (max 10 chars): ");
-    if (fgets(peer_name, BUFLEN, stdin) != NULL) {
-      peer_name[strcspn(peer_name, "\n")] = '\0';
-    }
-
-    printf("Enter Content Name (max 10 chars): ");
-    if (fgets(content_name, BUFLEN, stdin) != NULL) {
-      content_name[strcspn(content_name, "\n")] = '\0';
-    }
-
-    pdu_send.type = 'R';
-    bzero(pdu_send.data, 100);
+    scanf("%10s", peer_name);
     
-    /* Format forces peer_name and content_name to be exactly 10 bytes */
-    /* Appending '0' as a dummy placeholder for the address port for now */
-    snprintf(pdu_send.data, 100, "%-10s%-10s%d", peer_name, content_name, 0);
+    printf("Enter Content Name (max 10 chars): ");
+    scanf("%10s", content_name);
+    
+    while (getchar() != '\n'); 
 
-    sendto(sd, &pdu_send, sizeof(pdu_send), 0, (struct sockaddr *)&server, sizeof(server));
+    spdu.type = 'R';
+    bzero(spdu.data, MAX_DATA_LEN);
+    snprintf(spdu.data, MAX_DATA_LEN, "%-10s%-10s%d", peer_name, content_name, my_tcp_port);
 
-    if (recvfrom(sd, &pdu_recv, sizeof(pdu_recv), 0, (struct sockaddr *)&server, &server_len) > 0) {
-      if (pdu_recv.type == 'E') {
-        printf("\n[ Error: Peer name conflict or registration failed. Please try again. ]\n\n");
-      } 
-      else if (pdu_recv.type == 'A') {
-        printf("\n[ Success: now starting file transfer ]\n");
-        break;
-      }
+    sendto(udp_sock, &spdu, sizeof(PDU), 0, (struct sockaddr *)&index_addr, sizeof(index_addr));
+
+    socklen_t index_len = sizeof(index_addr);
+    recvfrom(udp_sock, &rpdu, sizeof(PDU), 0, (struct sockaddr *)&index_addr, &index_len);
+
+    if (rpdu.type == 'E') {
+      printf("[ Error: Peer name already exists or registration failed. Please try a different name. ]\n");
+    } else if (rpdu.type == 'A') {
+      printf("\n[ Success: Content registered successfully! ]\n");
+      registered = 1;
+    } else {
+      printf("[ Error: Unknown response from server. ]\n");
+      break;
     }
   }
-  
-  close(sd);
+
+  close(udp_sock);
 }
 
 #endif

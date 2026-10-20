@@ -11,6 +11,8 @@
 
 #define BUFLEN 256
 
+#include "registration.h" 
+
 int main(int argc, char **argv) {
   char host[BUFLEN];
   int port;
@@ -48,16 +50,33 @@ int main(int argc, char **argv) {
     }
 
     int choice = atoi(input_buffer);
+    
+    /* Variables for case 3 */
+    char peer_ip[BUFLEN];
+    char port_str[BUFLEN];
+    int peer_port;
 
     switch(choice) {
       case 1:
         printf("\n[ Action: Registering content... ]\n");
+        register_content(host, port);
         break;
       case 2:
         printf("\n[ Action: Searching for content... ]\n");
         break;
       case 3:
         printf("\n[ Action: Downloading content... ]\n");
+        printf("Enter the IP address of the Content Server: ");
+        if (fgets(peer_ip, BUFLEN, stdin) != NULL) {
+          peer_ip[strcspn(peer_ip, "\n")] = '\0';
+        }
+
+        printf("Enter the port of the Content Server: ");
+        if (fgets(port_str, BUFLEN, stdin) != NULL) {
+          peer_port = atoi(port_str);
+        }
+        
+        download_file(peer_ip, peer_port);
         break;
       case 4:
         printf("\n[ Action: Listing registered content... ]\n");
