@@ -66,17 +66,6 @@ int main(int argc, char **argv) {
         break;
       case 3:
         printf("\n[ Action: Downloading content... ]\n");
-        printf("Enter the IP address of the Content Server: ");
-        if (fgets(peer_ip, BUFLEN, stdin) != NULL) {
-          peer_ip[strcspn(peer_ip, "\n")] = '\0';
-        }
-
-        printf("Enter the port of the Content Server: ");
-        if (fgets(port_str, BUFLEN, stdin) != NULL) {
-          peer_port = atoi(port_str);
-        }
-        
-        download_file(peer_ip, peer_port);
         break;
       case 4:
         printf("\n[ Action: Listing registered content... ]\n");
