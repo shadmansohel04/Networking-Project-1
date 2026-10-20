@@ -118,6 +118,37 @@ int main(int argc, char **argv) {
           sendto(sd, &spdu, sizeof(PDU), 0, (struct sockaddr *)&client, client_len);
         }
       }
+    } 
+    else if (rpdu.type == 'S') {
+      char req_peer[11];
+      char req_content[11];
+      
+      /* Extract peer name and content name from the S-type PDU */
+      sscanf(rpdu.data, "%10s%10s", req_peer, req_content);
+      printf("Received Search Request from Peer: %s for Content: %s\n", req_peer, req_content);
+
+      int found = 0;
+      int i;
+      for (i = 0; i < reg_count; i++) {
+        if (strcmp(registry[i].content_name, req_content) == 0) {
+          found = 1;
+          break;
+        }
+      }
+
+      bzero(&spdu, sizeof(PDU));
+      if (found == 1) {
+        spdu.type = 'S';
+        snprintf(spdu.data, MAX_DATA_LEN, "%-10s%-20s%-10s", registry[i].peer_name, registry[i].ip, registry[i].port);
+        sendto(sd, &spdu, sizeof(PDU), 0, (struct sockaddr *)&client, client_len);
+        printf("Search successful. Sent address for content: %s\n", req_content);
+      } 
+      else {
+        spdu.type = 'E';
+        strcpy(spdu.data, "ERRMSG: Content not found.");
+        sendto(sd, &spdu, sizeof(PDU), 0, (struct sockaddr *)&client, client_len);
+        printf("Search failed: Content %s not found.\n", req_content);
+      }
     }
   }
 
