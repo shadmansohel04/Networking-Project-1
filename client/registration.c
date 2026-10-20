@@ -22,6 +22,7 @@ void register_content(const char *server_ip, int server_port) {
   struct sockaddr_in index_addr;
   char peer_name[11];
   char content_name[11];
+  char input_buf[256];
   PDU spdu, rpdu;
 
   /* Placeholder port until TCP download logic is implemented later */
@@ -40,13 +41,42 @@ void register_content(const char *server_ip, int server_port) {
   int registered = 0;
 
   while (registered == 0) {
-    printf("Enter Peer Name (max 10 chars): ");
-    scanf("%10s", peer_name);
     
-    printf("Enter Content Name (max 10 chars): ");
-    scanf("%10s", content_name);
+    /* Ask for Peer Name and validate length */
+    int valid_peer = 0;
+    while (valid_peer == 0) {
+      printf("Enter Peer Name (max 10 chars): ");
+      if (fgets(input_buf, sizeof(input_buf), stdin) != NULL) {
+        input_buf[strcspn(input_buf, "\n")] = '\0';
+        
+        if (strlen(input_buf) > 10) {
+          printf("[ Error: Peer Name exceeds 10 characters. Please try again. ]\n");
+        } else if (strlen(input_buf) == 0) {
+          printf("[ Error: Peer Name cannot be empty. Please try again. ]\n");
+        } else {
+          strcpy(peer_name, input_buf);
+          valid_peer = 1;
+        }
+      }
+    }
     
-    while (getchar() != '\n'); 
+    /* Ask for Content Name and validate length */
+    int valid_content = 0;
+    while (valid_content == 0) {
+      printf("Enter Content Name (max 10 chars): ");
+      if (fgets(input_buf, sizeof(input_buf), stdin) != NULL) {
+        input_buf[strcspn(input_buf, "\n")] = '\0';
+        
+        if (strlen(input_buf) > 10) {
+          printf("[ Error: Content Name exceeds 10 characters. Please try again. ]\n");
+        } else if (strlen(input_buf) == 0) {
+          printf("[ Error: Content Name cannot be empty. Please try again. ]\n");
+        } else {
+          strcpy(content_name, input_buf);
+          valid_content = 1;
+        }
+      }
+    }
 
     spdu.type = 'R';
     bzero(spdu.data, MAX_DATA_LEN);
