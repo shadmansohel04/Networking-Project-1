@@ -1,173 +1,185 @@
 #include <stdio.h>
-#include <netdb.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <strings.h>
 #include <string.h>
-#include <signal.h>
-#include <sys/wait.h>
+#include <unistd.h>
 
-#include "registration.h"
-#include "getContent.h"
+#define SERVER_UDP_PORT 3000
+#define MAX_DATA_LEN 100
+#define MAX_REG 100
 
-#define BUFLEN 256
-#define MY_TCP_PORT 8080
+typedef struct {
+  char type;
+  char data[MAX_DATA_LEN];
+} PDU;
 
-void start_peer_server(int tcp_port) {
-  int sd, new_sd;
+typedef struct {
+  char peer_name[11];
+  char content_name[11];
+  char port[10];
+  char ip[20];
+} RegistryEntry;
+
+/* Function Prototypes for modularity */
+void handle_registration(int sd, struct sockaddr_in *client, socklen_t client_len, PDU *rpdu, RegistryEntry *registry, int *reg_count);
+void handle_search(int sd, struct sockaddr_in *client, socklen_t client_len, PDU *rpdu, RegistryEntry *registry, int reg_count);
+
+int main(int argc, char **argv) {
+  int sd, port;
   struct sockaddr_in server, client;
-  socklen_t client_len = sizeof(client);
+  socklen_t client_len;
+  PDU rpdu;
 
-  if ((sd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
-    perror("Peer server: Can't create listening socket");
+  RegistryEntry registry[MAX_REG];
+  int reg_count = 0;
+
+  switch(argc) {
+    case 1:
+      port = SERVER_UDP_PORT;
+      break;
+    case 2:
+      port = atoi(argv[1]);
+      break;
+    default:
+      fprintf(stderr, "Usage: %s [port]\n", argv[0]);
+      exit(1);
+  }
+
+  if ((sd = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
+    fprintf(stderr, "Can't create a socket\n");
     exit(1);
   }
 
   bzero((char *)&server, sizeof(struct sockaddr_in));
   server.sin_family = AF_INET;
-  server.sin_port = htons(tcp_port);
+  server.sin_port = htons(port);
   server.sin_addr.s_addr = htonl(INADDR_ANY);
-
-  int opt = 1;
-  setsockopt(sd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
+  
   if (bind(sd, (struct sockaddr *)&server, sizeof(server)) == -1) {
-    perror("Peer server: Can't bind listening socket");
+    fprintf(stderr, "Can't bind name to socket\n");
     exit(1);
   }
 
-  listen(sd, 5);
+  printf("Index Server listening on UDP port %d...\n", port);
 
-  while (1) {
-    new_sd = accept(sd, (struct sockaddr *)&client, &client_len);
-    if (new_sd < 0) continue;
-
-    if (fork() == 0) {
-      close(sd);
-      PDU rpdu, spdu;
-      
-      int n = read(new_sd, &rpdu, sizeof(PDU));
-      if (n > 0 && rpdu.type == 'D') {
-        printf("\n[ Peer Server: Received request for file '%s' ]\n", rpdu.data);
-        
-        FILE *fp = fopen(rpdu.data, "rb");
-        bzero(&spdu, sizeof(PDU));
-        
-        if (fp == NULL) {
-          spdu.type = 'E';
-          strcpy(spdu.data, "ERRMSG: File not found on this peer.");
-          write(new_sd, &spdu, sizeof(PDU));
-          printf("[ Peer Server: File not found. Error sent to peer. ]\n");
-        } else {
-          spdu.type = 'F';
-          int bytes_read;
-          
-          while ((bytes_read = fread(spdu.data, 1, MAX_DATA_LEN - 1, fp)) > 0) {
-            write(new_sd, &spdu, bytes_read + 1);
-            bzero(spdu.data, MAX_DATA_LEN); 
-          }
-          fclose(fp);
-          printf("[ Peer Server: File transfer complete. ]\n");
-        }
-      }
-      
-      close(new_sd);
-      exit(0); 
+  while(1) {
+    client_len = sizeof(client);
+    bzero(&rpdu, sizeof(PDU));
+    
+    if (recvfrom(sd, &rpdu, sizeof(PDU), 0, (struct sockaddr *)&client, &client_len) < 0) {
+      continue;
     }
-    close(new_sd); 
+
+    /* Modular Switch-Case Design for PDU Types */
+    switch (rpdu.type) {
+      case 'R':
+        handle_registration(sd, &client, client_len, &rpdu, registry, &reg_count);
+        break;
+      case 'S':
+        handle_search(sd, &client, client_len, &rpdu, registry, reg_count);
+        break;
+      /* Future cases like 'O' (List) or 'T' (De-register) can be easily added here */
+      default:
+        printf("Received unknown PDU type: '%c'\n", rpdu.type);
+        break;
+    }
+  }
+
+  close(sd);
+  return 0;
+}
+
+/* -------------------------------------------------------------------------
+ * handle_registration: Processes an 'R' type PDU to register new content
+ * ------------------------------------------------------------------------- */
+void handle_registration(int sd, struct sockaddr_in *client, socklen_t client_len, PDU *rpdu, RegistryEntry *registry, int *reg_count) {
+  PDU spdu;
+  char peer_name[11];
+  char content_name[11];
+  char peer_port[10];
+  char client_ip[20];
+
+  /* Extract the IP address from the client socket structure */
+  strcpy(client_ip, inet_ntoa(client->sin_addr));
+
+  sscanf(rpdu->data, "%10s%10s%s", peer_name, content_name, peer_port);
+  printf("Received Registration Request: Peer: %s, Content: %s, Port: %s, IP: %s\n", 
+         peer_name, content_name, peer_port, client_ip);
+
+  int conflict = 0;
+  int i; 
+  for (i = 0; i < *reg_count; i++) {
+    if (strcmp(registry[i].peer_name, peer_name) == 0 && 
+        strcmp(registry[i].content_name, content_name) == 0) {
+      conflict = 1;
+      break;
+    }
+  }
+
+  bzero(&spdu, sizeof(PDU));
+  if (conflict == 1) {
+    spdu.type = 'E';
+    strcpy(spdu.data, "ERRMSG: Peer name conflict for this content.");
+    sendto(sd, &spdu, sizeof(PDU), 0, (struct sockaddr *)client, client_len);
+    printf("Registration rejected: Conflict detected.\n");
+  } 
+  else {
+    if (*reg_count < MAX_REG) {
+      strcpy(registry[*reg_count].peer_name, peer_name);
+      strcpy(registry[*reg_count].content_name, content_name);
+      strcpy(registry[*reg_count].port, peer_port);
+      strcpy(registry[*reg_count].ip, client_ip);
+      (*reg_count)++;
+      
+      spdu.type = 'A';
+      sendto(sd, &spdu, sizeof(PDU), 0, (struct sockaddr *)client, client_len);
+      printf("Registration successful. Total entries: %d\n", *reg_count);
+    } 
+    else {
+      spdu.type = 'E';
+      strcpy(spdu.data, "ERRMSG: Server registry full.");
+      sendto(sd, &spdu, sizeof(PDU), 0, (struct sockaddr *)client, client_len);
+      printf("Registration rejected: Server registry full.\n");
+    }
   }
 }
 
-int main(int argc, char **argv) {
-  char host[BUFLEN];
-  int port;
-  char input_buffer[BUFLEN];
-
-  pid_t server_pid = fork();
-  if (server_pid == 0) {
-    start_peer_server(MY_TCP_PORT);
-    exit(0);
-  }
+/* -------------------------------------------------------------------------
+ * handle_search: Processes an 'S' type PDU to lookup content
+ * ------------------------------------------------------------------------- */
+void handle_search(int sd, struct sockaddr_in *client, socklen_t client_len, PDU *rpdu, RegistryEntry *registry, int reg_count) {
+  PDU spdu;
+  char req_peer[11];
+  char req_content[11];
   
-  printf("Enter the IP address of the index server: ");
-  if (fgets(host, BUFLEN, stdin) != NULL) {
-    host[strcspn(host, "\n")] = '\0';
-  }
+  /* Extract peer name and content name from the S-type PDU */
+  sscanf(rpdu->data, "%10s%10s", req_peer, req_content);
+  printf("Received Search Request from Peer: %s for Content: %s\n", req_peer, req_content);
 
-  printf("Enter the port of the index server: ");
-  if (fgets(input_buffer, BUFLEN, stdin) != NULL) {
-    port = atoi(input_buffer);
-  }
-
-  while(1) {
-    printf("\n--- P2P Application Menu ---\n");
-    printf("1. Register Content (R-type)\n");
-    printf("2. Search Content (S-type)\n");
-    printf("3. Download Content (D-type)\n");
-    printf("4. List On-Line Registered Content (O-type)\n");
-    printf("5. De-Register Content (T-type)\n");
-    printf("Type 'exit' to quit\n");
-    printf("\nEnter your choice: ");
-
-    if (fgets(input_buffer, BUFLEN, stdin) == NULL) {
+  int found = 0;
+  int i;
+  for (i = 0; i < reg_count; i++) {
+    if (strcmp(registry[i].content_name, req_content) == 0) {
+      found = 1;
       break;
     }
-
-    input_buffer[strcspn(input_buffer, "\n")] = '\0';
-
-    if (strcmp(input_buffer, "exit") == 0) {
-      printf("Exiting application. Goodbye!\n");
-      break;
-    }
-
-    int choice = atoi(input_buffer);
-
-    switch(choice) {
-      case 1:
-        printf("\n[ Action: Registering content... ]\n");
-        register_content(host, port);
-        break;
-      case 2:
-        printf("\n[ Action: Searching for content... ]\n");
-        {
-          char dummy_ip[21];
-          int dummy_port;
-          char dummy_file[11];
-          search_content(host, port, dummy_ip, &dummy_port, dummy_file);
-        }
-        break;
-      case 3:
-        printf("\n[ Action: Downloading content... ]\n");
-        {
-          char peer_ip[21];
-          int peer_port;
-          char filename[11];
-          
-          if (search_content(host, port, peer_ip, &peer_port, filename) == 1) {
-            printf("[ Initiating connection to %s:%d to download '%s'... ]\n", peer_ip, peer_port, filename);
-            download_content(peer_ip, peer_port, filename);
-          } else {
-            printf("[ Download aborted: Could not locate content on the index server. ]\n");
-          }
-        }
-        break;
-      case 4:
-        printf("\n[ Action: Listing registered content... ]\n");
-        break;
-      case 5:
-        printf("\n[ Action: De-registering content... ]\n");
-        break;
-      default:
-        printf("\n[ Error: Invalid choice. Please enter a number 1-5 or 'exit'. ]\n");
-    }
   }
 
-  kill(server_pid, SIGTERM);
-  waitpid(server_pid, NULL, 0);
-
-  return 0;
+  bzero(&spdu, sizeof(PDU));
+  if (found == 1) {
+    spdu.type = 'S';
+    snprintf(spdu.data, MAX_DATA_LEN, "%-10s%-20s%-10s", registry[i].peer_name, registry[i].ip, registry[i].port);
+    sendto(sd, &spdu, sizeof(PDU), 0, (struct sockaddr *)client, client_len);
+    printf("Search successful. Sent address for content: %s\n", req_content);
+  } 
+  else {
+    spdu.type = 'E';
+    strcpy(spdu.data, "ERRMSG: Content not found.");
+    sendto(sd, &spdu, sizeof(PDU), 0, (struct sockaddr *)client, client_len);
+    printf("Search failed: Content %s not found.\n", req_content);
+  }
 }
