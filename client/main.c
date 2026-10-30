@@ -60,10 +60,28 @@ int main(int argc, char **argv) {
         break;
       case 2:
         printf("\n[ Action: Searching for content... ]\n");
-        get_content(host, port);
+        {
+          /* Execute search but ignore the returned data for a standard search query */
+          char dummy_ip[21];
+          int dummy_port;
+          char dummy_file[11];
+          search_content(host, port, dummy_ip, &dummy_port, dummy_file);
+        }
         break;
       case 3:
         printf("\n[ Action: Downloading content... ]\n");
+        {
+          char peer_ip[21];
+          int peer_port;
+          char filename[11];
+          
+          if (search_content(host, port, peer_ip, &peer_port, filename) == 1) {
+            printf("[ Initiating connection to %s:%d to download '%s'... ]\n", peer_ip, peer_port, filename);
+            download_content(peer_ip, peer_port, filename);
+          } else {
+            printf("[ Download aborted: Could not locate content on the index server. ]\n");
+          }
+        }
         break;
       case 4:
         printf("\n[ Action: Listing registered content... ]\n");
