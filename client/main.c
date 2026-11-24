@@ -21,7 +21,8 @@ typedef struct {
 
 /* Helper to track locally registered files so we can de-register all on quit */
 void add_local_file(char local_files[][11], int *count, const char *filename) {
-  for (int i = 0; i < *count; i++) {
+  int i;
+  for (i = 0; i < *count; i++) {
     if (strcmp(local_files[i], filename) == 0) return;
   }
   if (*count < MAX_LOCAL_FILES) {
@@ -31,9 +32,10 @@ void add_local_file(char local_files[][11], int *count, const char *filename) {
 }
 
 void remove_local_file(char local_files[][11], int *count, const char *filename) {
-  for (int i = 0; i < *count; i++) {
+  int i, j;
+  for (i = 0; i < *count; i++) {
     if (strcmp(local_files[i], filename) == 0) {
-      for (int j = i; j < *count - 1; j++) {
+      for (j = i; j < *count - 1; j++) {
         strcpy(local_files[j], local_files[j + 1]);
       }
       (*count)--;
@@ -47,6 +49,7 @@ int send_registration_pdu(const char *server_ip, int server_port, const char *pe
   int udp_sock;
   struct sockaddr_in index_addr;
   PDU spdu, rpdu;
+  socklen_t index_len;
 
   if ((udp_sock = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
     perror("Cannot create UDP socket");
@@ -64,7 +67,7 @@ int send_registration_pdu(const char *server_ip, int server_port, const char *pe
 
   sendto(udp_sock, &spdu, sizeof(PDU), 0, (struct sockaddr *)&index_addr, sizeof(index_addr));
 
-  socklen_t index_len = sizeof(index_addr);
+  index_len = sizeof(index_addr);
   recvfrom(udp_sock, &rpdu, sizeof(PDU), 0, (struct sockaddr *)&index_addr, &index_len);
   close(udp_sock);
 
@@ -81,6 +84,7 @@ int send_deregistration_pdu(const char *server_ip, int server_port, const char *
   int udp_sock;
   struct sockaddr_in index_addr;
   PDU spdu, rpdu;
+  socklen_t index_len;
 
   if ((udp_sock = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
     perror("Cannot create UDP socket");
@@ -98,7 +102,7 @@ int send_deregistration_pdu(const char *server_ip, int server_port, const char *
 
   sendto(udp_sock, &spdu, sizeof(PDU), 0, (struct sockaddr *)&index_addr, sizeof(index_addr));
 
-  socklen_t index_len = sizeof(index_addr);
+  index_len = sizeof(index_addr);
   recvfrom(udp_sock, &rpdu, sizeof(PDU), 0, (struct sockaddr *)&index_addr, &index_len);
   close(udp_sock);
 
@@ -171,10 +175,11 @@ void deregister_content(const char *server_ip, int server_port, const char *my_p
 
 /* De-registers all tracked content when the user quits */
 void deregister_all_on_quit(const char *server_ip, int server_port, const char *my_peer_name, char local_files[][11], int *local_count) {
+  int i;
   if (*local_count == 0) return;
 
   printf("[ De-registering %d registered file(s) before quitting... ]\n", *local_count);
-  for (int i = 0; i < *local_count; i++) {
+  for (i = 0; i < *local_count; i++) {
     if (send_deregistration_pdu(server_ip, server_port, my_peer_name, local_files[i])) {
       printf("  -> De-registered '%s'\n", local_files[i]);
     }
@@ -187,6 +192,8 @@ void list_online_content(const char *server_ip, int server_port) {
   int udp_sock;
   struct sockaddr_in index_addr;
   PDU spdu, rpdu;
+  socklen_t index_len;
+  int count = 0;
 
   if ((udp_sock = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
     perror("Cannot create UDP socket");
@@ -203,8 +210,7 @@ void list_online_content(const char *server_ip, int server_port) {
 
   sendto(udp_sock, &spdu, sizeof(PDU), 0, (struct sockaddr *)&index_addr, sizeof(index_addr));
 
-  socklen_t index_len = sizeof(index_addr);
-  int count = 0;
+  index_len = sizeof(index_addr);
 
   printf("\n=== On-Line Registered Content ===\n");
   while (1) {
@@ -218,7 +224,6 @@ void list_online_content(const char *server_ip, int server_port) {
       count++;
       printf("  %d. %s\n", count, rpdu.data);
     } else if (rpdu.type == 'A') {
-      /* End of list signal */
       if (count == 0) {
         printf("  (No content currently registered on the server)\n");
       }
@@ -242,6 +247,7 @@ int search_content(const char *server_ip, int server_port, const char *my_peer_n
   char content_name[11];
   char input_buf[256];
   PDU spdu, rpdu;
+  socklen_t index_len;
 
   if ((udp_sock = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
     perror("Cannot create UDP socket");
@@ -266,7 +272,7 @@ int search_content(const char *server_ip, int server_port, const char *my_peer_n
 
   sendto(udp_sock, &spdu, sizeof(PDU), 0, (struct sockaddr *)&index_addr, sizeof(index_addr));
 
-  socklen_t index_len = sizeof(index_addr);
+  index_len = sizeof(index_addr);
   recvfrom(udp_sock, &rpdu, sizeof(PDU), 0, (struct sockaddr *)&index_addr, &index_len);
 
   if (rpdu.type == 'S') {
@@ -298,6 +304,7 @@ int download_content(const char *ip, int port, const char *filename) {
   int sd, n;
   struct sockaddr_in peer_addr;
   PDU spdu, rpdu;
+  int success = 0;
 
   if ((sd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
     perror("Can't create a socket");
@@ -326,7 +333,6 @@ int download_content(const char *ip, int port, const char *filename) {
   write(sd, &spdu, sizeof(PDU));
 
   n = read(sd, &rpdu, sizeof(PDU));
-  int success = 0;
   
   if (n > 0) {
     if (rpdu.type == 'E') {
@@ -363,9 +369,10 @@ void handle_download_request(int new_sd) {
   int n = read(new_sd, &rpdu, sizeof(PDU));
   
   if (n > 0 && rpdu.type == 'D') {
+    FILE *fp;
     printf("\n[ Peer Server: Received request for file '%s' ]\n", rpdu.data);
     
-    FILE *fp = fopen(rpdu.data, "rb");
+    fp = fopen(rpdu.data, "rb");
     bzero(&spdu, sizeof(PDU));
     
     if (fp == NULL) {
@@ -374,8 +381,8 @@ void handle_download_request(int new_sd) {
       write(new_sd, &spdu, sizeof(PDU));
       printf("[ Peer Server: File not found. Error sent to peer. ]\n");
     } else {
-      spdu.type = 'C';
       int bytes_read;
+      spdu.type = 'C';
       
       while ((bytes_read = fread(spdu.data, 1, MAX_DATA_LEN - 1, fp)) > 0) {
         write(new_sd, &spdu, bytes_read + 1);
@@ -396,6 +403,14 @@ int main(int argc, char **argv) {
 
   char local_files[MAX_LOCAL_FILES][11];
   int local_count = 0;
+
+  int tcp_sock;
+  struct sockaddr_in reg_addr;
+  socklen_t alen = sizeof(struct sockaddr_in);
+  int my_tcp_port;
+
+  fd_set rfds, afds;
+  int print_menu = 1;
   
   const char *menu_text = 
     "\n--- P2P Application Menu ---\n"
@@ -406,10 +421,6 @@ int main(int argc, char **argv) {
     "5. De-Register Content (T-type)\n"
     "Type 'exit' to quit\n"
     "\nEnter your choice: ";
-
-  int tcp_sock;
-  struct sockaddr_in reg_addr;
-  socklen_t alen = sizeof(struct sockaddr_in);
 
   if ((tcp_sock = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
     perror("Cannot create TCP socket");
@@ -428,7 +439,7 @@ int main(int argc, char **argv) {
   listen(tcp_sock, 5);
 
   getsockname(tcp_sock, (struct sockaddr *)&reg_addr, &alen);
-  int my_tcp_port = ntohs(reg_addr.sin_port);
+  my_tcp_port = ntohs(reg_addr.sin_port);
 
   printf("[ Started Local Peer Server on TCP port %d ]\n\n", my_tcp_port);
 
@@ -454,14 +465,11 @@ int main(int argc, char **argv) {
     index_port = atoi(input_buffer);
   }
 
-  fd_set rfds, afds;
   FD_ZERO(&afds);
   FD_SET(0, &afds);
   FD_SET(tcp_sock, &afds);
 
   signal(SIGCHLD, SIG_IGN); 
-
-  int print_menu = 1;
 
   while(1) {
     if (print_menu) {
@@ -493,6 +501,7 @@ int main(int argc, char **argv) {
     }
 
     if (FD_ISSET(0, &rfds)) {
+      int choice;
       if (fgets(input_buffer, BUFLEN, stdin) == NULL) {
         break;
       }
@@ -505,7 +514,7 @@ int main(int argc, char **argv) {
         break;
       }
 
-      int choice = atoi(input_buffer);
+      choice = atoi(input_buffer);
 
       switch(choice) {
         case 1:
