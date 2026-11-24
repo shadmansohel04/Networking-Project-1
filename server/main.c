@@ -22,6 +22,7 @@ typedef struct {
   char content_name[11];
   char port[10];
   char ip[20];
+  int use_count; /* Tracks how many times this content server has been selected */
 } RegistryEntry;
 
 void handle_registration(int sd, struct sockaddr_in *client, socklen_t client_len, PDU *rpdu, RegistryEntry *registry, int *reg_count);
@@ -80,7 +81,6 @@ int main(int argc, char **argv) {
       case 'S':
         handle_search(sd, &client, client_len, &rpdu, registry, reg_count);
         break;
-      /* Future cases like 'O' (List) or 'T' (De-register) can be easily added here */
       default:
         printf("Received unknown PDU type: '%c'\n", rpdu.type);
         break;
@@ -98,7 +98,6 @@ void handle_registration(int sd, struct sockaddr_in *client, socklen_t client_le
   char peer_port[10];
   char client_ip[20];
 
-  /* Extract the IP address from the client socket structure */
   strcpy(client_ip, inet_ntoa(client->sin_addr));
 
   sscanf(rpdu->data, "%10s%10s%s", peer_name, content_name, peer_port);
@@ -128,6 +127,7 @@ void handle_registration(int sd, struct sockaddr_in *client, socklen_t client_le
       strcpy(registry[*reg_count].content_name, content_name);
       strcpy(registry[*reg_count].port, peer_port);
       strcpy(registry[*reg_count].ip, client_ip);
+      registry[*reg_count].use_count = 0; /* Initialize usage counter */
       (*reg_count)++;
       
       spdu.type = 'A';
@@ -148,25 +148,32 @@ void handle_search(int sd, struct sockaddr_in *client, socklen_t client_len, PDU
   char req_peer[11];
   char req_content[11];
   
-  /* Extract peer name and content name from the S-type PDU */
   sscanf(rpdu->data, "%10s%10s", req_peer, req_content);
   printf("Received Search Request from Peer: %s for Content: %s\n", req_peer, req_content);
 
-  int found = 0;
+  /* Load balancing: find the registered server for req_content with the lowest use_count */
+  int best_idx = -1;
   int i;
   for (i = 0; i < reg_count; i++) {
     if (strcmp(registry[i].content_name, req_content) == 0) {
-      found = 1;
-      break;
+      if (best_idx == -1 || registry[i].use_count < registry[best_idx].use_count) {
+        best_idx = i;
+      }
     }
   }
 
   bzero(&spdu, sizeof(PDU));
-  if (found == 1) {
+  if (best_idx != -1) {
+    registry[best_idx].use_count++; /* Increment usage count for load balancing */
+    
     spdu.type = 'S';
-    snprintf(spdu.data, MAX_DATA_LEN, "%-10s%-20s%-10s", registry[i].peer_name, registry[i].ip, registry[i].port);
+    snprintf(spdu.data, MAX_DATA_LEN, "%-10s%-20s%-10s", 
+             registry[best_idx].peer_name, 
+             registry[best_idx].ip, 
+             registry[best_idx].port);
     sendto(sd, &spdu, sizeof(PDU), 0, (struct sockaddr *)client, client_len);
-    printf("Search successful. Sent address for content: %s\n", req_content);
+    printf("Search successful. Directed '%s' to Peer '%s' (use_count: %d)\n", 
+           req_content, registry[best_idx].peer_name, registry[best_idx].use_count);
   } 
   else {
     spdu.type = 'E';
