@@ -22,11 +22,13 @@ typedef struct {
   char content_name[11];
   char port[10];
   char ip[20];
-  int use_count; /* Tracks how many times this content server has been selected */
+  int use_count;
 } RegistryEntry;
 
 void handle_registration(int sd, struct sockaddr_in *client, socklen_t client_len, PDU *rpdu, RegistryEntry *registry, int *reg_count);
 void handle_search(int sd, struct sockaddr_in *client, socklen_t client_len, PDU *rpdu, RegistryEntry *registry, int reg_count);
+void handle_deregistration(int sd, struct sockaddr_in *client, socklen_t client_len, PDU *rpdu, RegistryEntry *registry, int *reg_count);
+void handle_list(int sd, struct sockaddr_in *client, socklen_t client_len, RegistryEntry *registry, int reg_count);
 
 int main(int argc, char **argv) {
   int sd, port;
@@ -81,6 +83,12 @@ int main(int argc, char **argv) {
       case 'S':
         handle_search(sd, &client, client_len, &rpdu, registry, reg_count);
         break;
+      case 'O':
+        handle_list(sd, &client, client_len, registry, reg_count);
+        break;
+      case 'T':
+        handle_deregistration(sd, &client, client_len, &rpdu, registry, &reg_count);
+        break;
       default:
         printf("Received unknown PDU type: '%c'\n", rpdu.type);
         break;
@@ -127,7 +135,7 @@ void handle_registration(int sd, struct sockaddr_in *client, socklen_t client_le
       strcpy(registry[*reg_count].content_name, content_name);
       strcpy(registry[*reg_count].port, peer_port);
       strcpy(registry[*reg_count].ip, client_ip);
-      registry[*reg_count].use_count = 0; /* Initialize usage counter */
+      registry[*reg_count].use_count = 0;
       (*reg_count)++;
       
       spdu.type = 'A';
@@ -151,7 +159,6 @@ void handle_search(int sd, struct sockaddr_in *client, socklen_t client_len, PDU
   sscanf(rpdu->data, "%10s%10s", req_peer, req_content);
   printf("Received Search Request from Peer: %s for Content: %s\n", req_peer, req_content);
 
-  /* Load balancing: find the registered server for req_content with the lowest use_count */
   int best_idx = -1;
   int i;
   for (i = 0; i < reg_count; i++) {
@@ -164,7 +171,7 @@ void handle_search(int sd, struct sockaddr_in *client, socklen_t client_len, PDU
 
   bzero(&spdu, sizeof(PDU));
   if (best_idx != -1) {
-    registry[best_idx].use_count++; /* Increment usage count for load balancing */
+    registry[best_idx].use_count++;
     
     spdu.type = 'S';
     snprintf(spdu.data, MAX_DATA_LEN, "%-10s%-20s%-10s", 
@@ -180,5 +187,75 @@ void handle_search(int sd, struct sockaddr_in *client, socklen_t client_len, PDU
     strcpy(spdu.data, "ERRMSG: Content not found.");
     sendto(sd, &spdu, sizeof(PDU), 0, (struct sockaddr *)client, client_len);
     printf("Search failed: Content %s not found.\n", req_content);
+  }
+}
+
+void handle_list(int sd, struct sockaddr_in *client, socklen_t client_len, RegistryEntry *registry, int reg_count) {
+  PDU spdu;
+  char sent_names[MAX_REG][11];
+  int sent_count = 0;
+
+  printf("Received List Request (O-type).\n");
+
+  for (int i = 0; i < reg_count; i++) {
+    /* Deduplicate so each unique content name is listed once */
+    int already_sent = 0;
+    for (int j = 0; j < sent_count; j++) {
+      if (strcmp(sent_names[j], registry[i].content_name) == 0) {
+        already_sent = 1;
+        break;
+      }
+    }
+
+    if (!already_sent) {
+      strcpy(sent_names[sent_count++], registry[i].content_name);
+
+      bzero(&spdu, sizeof(PDU));
+      spdu.type = 'O';
+      strncpy(spdu.data, registry[i].content_name, MAX_DATA_LEN - 1);
+      sendto(sd, &spdu, sizeof(PDU), 0, (struct sockaddr *)client, client_len);
+    }
+  }
+
+  /* Send A-type PDU to mark the end of the content list */
+  bzero(&spdu, sizeof(PDU));
+  spdu.type = 'A';
+  sendto(sd, &spdu, sizeof(PDU), 0, (struct sockaddr *)client, client_len);
+  printf("Sent %d unique content item(s) to peer.\n", sent_count);
+}
+
+void handle_deregistration(int sd, struct sockaddr_in *client, socklen_t client_len, PDU *rpdu, RegistryEntry *registry, int *reg_count) {
+  PDU spdu;
+  char peer_name[11];
+  char content_name[11];
+
+  sscanf(rpdu->data, "%10s%10s", peer_name, content_name);
+  printf("Received De-Registration Request: Peer: %s, Content: %s\n", peer_name, content_name);
+
+  int found_idx = -1;
+  for (int i = 0; i < *reg_count; i++) {
+    if (strcmp(registry[i].peer_name, peer_name) == 0 &&
+        strcmp(registry[i].content_name, content_name) == 0) {
+      found_idx = i;
+      break;
+    }
+  }
+
+  bzero(&spdu, sizeof(PDU));
+  if (found_idx != -1) {
+    for (int j = found_idx; j < *reg_count - 1; j++) {
+      registry[j] = registry[j + 1];
+    }
+    (*reg_count)--;
+
+    spdu.type = 'A';
+    sendto(sd, &spdu, sizeof(PDU), 0, (struct sockaddr *)client, client_len);
+    printf("De-registration successful. Total entries remaining: %d\n", *reg_count);
+  } 
+  else {
+    spdu.type = 'E';
+    strcpy(spdu.data, "ERRMSG: Matching peer/content entry not found.");
+    sendto(sd, &spdu, sizeof(PDU), 0, (struct sockaddr *)client, client_len);
+    printf("De-registration failed: Entry not found.\n");
   }
 }
