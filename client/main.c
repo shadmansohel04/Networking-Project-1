@@ -18,18 +18,15 @@ typedef struct {
   char data[MAX_DATA_LEN];
 } PDU;
 
-/* Updated to take my_tcp_port dynamically rather than relying on a hardcoded macro */
-void register_content(const char *server_ip, int server_port, int my_tcp_port) {
+/* Helper function to send an R-type PDU for a given peer_name and content_name */
+int send_registration_pdu(const char *server_ip, int server_port, const char *peer_name, const char *content_name, int my_tcp_port) {
   int udp_sock;
   struct sockaddr_in index_addr;
-  char peer_name[11];
-  char content_name[11];
-  char input_buf[256];
   PDU spdu, rpdu;
 
   if ((udp_sock = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
     perror("Cannot create UDP socket");
-    return;
+    return 0;
   }
 
   bzero((char *)&index_addr, sizeof(struct sockaddr_in));
@@ -37,70 +34,63 @@ void register_content(const char *server_ip, int server_port, int my_tcp_port) {
   index_addr.sin_port = htons(server_port);
   inet_aton(server_ip, &index_addr.sin_addr);
 
-  int registered = 0;
+  spdu.type = 'R';
+  bzero(spdu.data, MAX_DATA_LEN);
+  snprintf(spdu.data, MAX_DATA_LEN, "%-10s%-10s%d", peer_name, content_name, my_tcp_port);
 
-  while (registered == 0) {
-    int valid_peer = 0;
-    while (valid_peer == 0) {
-      printf("Enter Peer Name (max 10 chars): ");
-      if (fgets(input_buf, sizeof(input_buf), stdin) != NULL) {
-        input_buf[strcspn(input_buf, "\n")] = '\0';
-        
-        if (strlen(input_buf) > 10) {
-          printf("[ Error: Peer Name exceeds 10 characters. Please try again. ]\n");
-        } else if (strlen(input_buf) == 0) {
-          printf("[ Error: Peer Name cannot be empty. Please try again. ]\n");
-        } else {
-          strcpy(peer_name, input_buf);
-          valid_peer = 1;
-        }
+  sendto(udp_sock, &spdu, sizeof(PDU), 0, (struct sockaddr *)&index_addr, sizeof(index_addr));
+
+  socklen_t index_len = sizeof(index_addr);
+  recvfrom(udp_sock, &rpdu, sizeof(PDU), 0, (struct sockaddr *)&index_addr, &index_len);
+  close(udp_sock);
+
+  if (rpdu.type == 'A') {
+    return 1;
+  } else if (rpdu.type == 'E') {
+    printf("[ Error from Index Server: %s ]\n", rpdu.data);
+  }
+  return 0;
+}
+
+/* Interactive registration: prompts for content name (and allows changing peer name on conflict) */
+void register_content(const char *server_ip, int server_port, char *my_peer_name, int my_tcp_port) {
+  char content_name[11];
+  char input_buf[256];
+  int valid_content = 0;
+
+  while (!valid_content) {
+    printf("Enter Content Name to register (max 10 chars): ");
+    if (fgets(input_buf, sizeof(input_buf), stdin) != NULL) {
+      input_buf[strcspn(input_buf, "\n")] = '\0';
+      if (strlen(input_buf) > 10 || strlen(input_buf) == 0) {
+        printf("[ Error: Content Name must be 1-10 characters. ]\n");
+      } else {
+        strcpy(content_name, input_buf);
+        valid_content = 1;
       }
-    }
-    
-    int valid_content = 0;
-    while (valid_content == 0) {
-      printf("Enter Content Name (max 10 chars): ");
-      if (fgets(input_buf, sizeof(input_buf), stdin) != NULL) {
-        input_buf[strcspn(input_buf, "\n")] = '\0';
-        
-        if (strlen(input_buf) > 10) {
-          printf("[ Error: Content Name exceeds 10 characters. Please try again. ]\n");
-        } else if (strlen(input_buf) == 0) {
-          printf("[ Error: Content Name cannot be empty. Please try again. ]\n");
-        } else {
-          strcpy(content_name, input_buf);
-          valid_content = 1;
-        }
-      }
-    }
-
-    spdu.type = 'R';
-    bzero(spdu.data, MAX_DATA_LEN);
-    snprintf(spdu.data, MAX_DATA_LEN, "%-10s%-10s%d", peer_name, content_name, my_tcp_port);
-
-    sendto(udp_sock, &spdu, sizeof(PDU), 0, (struct sockaddr *)&index_addr, sizeof(index_addr));
-
-    socklen_t index_len = sizeof(index_addr);
-    recvfrom(udp_sock, &rpdu, sizeof(PDU), 0, (struct sockaddr *)&index_addr, &index_len);
-
-    if (rpdu.type == 'E') {
-      printf("[ Error: Peer name already exists or registration failed. Please try a different name. ]\n");
-    } else if (rpdu.type == 'A') {
-      printf("\n[ Success: Content registered successfully! ]\n");
-      registered = 1;
-    } else {
-      printf("[ Error: Unknown response from server. ]\n");
-      break;
     }
   }
 
-  close(udp_sock);
+  while (1) {
+    if (send_registration_pdu(server_ip, server_port, my_peer_name, content_name, my_tcp_port)) {
+      printf("\n[ Success: '%s' registered under peer '%s'! ]\n", content_name, my_peer_name);
+      break;
+    } else {
+      printf("Please enter a different Peer Name (max 10 chars): ");
+      if (fgets(input_buf, sizeof(input_buf), stdin) != NULL) {
+        input_buf[strcspn(input_buf, "\n")] = '\0';
+        if (strlen(input_buf) > 0 && strlen(input_buf) <= 10) {
+          strcpy(my_peer_name, input_buf);
+        }
+      }
+    }
+  }
 }
 
-int search_content(const char *server_ip, int server_port, char *out_ip, int *out_port, char *out_filename) {
+/* Only prompts for Content Name; automatically attaches my_peer_name to the S-type PDU */
+int search_content(const char *server_ip, int server_port, const char *my_peer_name, char *out_ip, int *out_port, char *out_filename) {
   int udp_sock;
   struct sockaddr_in index_addr;
-  char peer_name[11];
   char content_name[11];
   char input_buf[256];
   PDU spdu, rpdu;
@@ -115,13 +105,6 @@ int search_content(const char *server_ip, int server_port, char *out_ip, int *ou
   index_addr.sin_port = htons(server_port);
   inet_aton(server_ip, &index_addr.sin_addr);
 
-  printf("Enter Peer Name to search (max 10 chars): ");
-  if (fgets(input_buf, sizeof(input_buf), stdin) != NULL) {
-    input_buf[strcspn(input_buf, "\n")] = '\0';
-    strncpy(peer_name, input_buf, 10);
-    peer_name[10] = '\0';
-  }
-
   printf("Enter Content Name to search (max 10 chars): ");
   if (fgets(input_buf, sizeof(input_buf), stdin) != NULL) {
     input_buf[strcspn(input_buf, "\n")] = '\0';
@@ -131,7 +114,8 @@ int search_content(const char *server_ip, int server_port, char *out_ip, int *ou
 
   spdu.type = 'S';
   bzero(spdu.data, MAX_DATA_LEN);
-  snprintf(spdu.data, MAX_DATA_LEN, "%-10s%-10s", peer_name, content_name);
+  /* Pack our own peer name and the requested content name */
+  snprintf(spdu.data, MAX_DATA_LEN, "%-10s%-10s", my_peer_name, content_name);
 
   sendto(udp_sock, &spdu, sizeof(PDU), 0, (struct sockaddr *)&index_addr, sizeof(index_addr));
 
@@ -195,17 +179,17 @@ int download_content(const char *ip, int port, const char *filename) {
   write(sd, &spdu, sizeof(PDU));
 
   n = read(sd, &rpdu, sizeof(PDU));
+  int success = 0;
   
   if (n > 0) {
     if (rpdu.type == 'E') {
       write(1, rpdu.data, n - 1);
-      
       while ((n = read(sd, &rpdu, sizeof(PDU))) > 0) {
         write(1, rpdu.data, n - 1);
       }
       printf("\n");
     } 
-    else if (rpdu.type == 'F') {
+    else if (rpdu.type == 'C') { /* C-type PDU for Content Data */
       FILE *fp = fopen(filename, "wb");
       if (fp != NULL) {
         fwrite(rpdu.data, 1, n - 1, fp);
@@ -216,6 +200,7 @@ int download_content(const char *ip, int port, const char *filename) {
         
         fclose(fp);
         printf("\n[ Success: File downloaded successfully to '%s'. ]\n", filename);
+        success = 1;
       } else {
         perror("Failed to open local file for writing");
       }
@@ -223,10 +208,9 @@ int download_content(const char *ip, int port, const char *filename) {
   }
 
   close(sd);
-  return 1;
+  return success;
 }
 
-/* Extracted the transfer logic to run immediately when a connection is accepted */
 void handle_download_request(int new_sd) {
   PDU rpdu, spdu;
   int n = read(new_sd, &rpdu, sizeof(PDU));
@@ -243,7 +227,7 @@ void handle_download_request(int new_sd) {
       write(new_sd, &spdu, sizeof(PDU));
       printf("[ Peer Server: File not found. Error sent to peer. ]\n");
     } else {
-      spdu.type = 'F';
+      spdu.type = 'C'; /* C-type PDU for Content Data */
       int bytes_read;
       
       while ((bytes_read = fread(spdu.data, 1, MAX_DATA_LEN - 1, fp)) > 0) {
@@ -260,6 +244,7 @@ void handle_download_request(int new_sd) {
 int main(int argc, char **argv) {
   char host[BUFLEN];
   int index_port;
+  char my_peer_name[11];
   char input_buffer[BUFLEN];
   
   const char *menu_text = 
@@ -272,7 +257,6 @@ int main(int argc, char **argv) {
     "Type 'exit' to quit\n"
     "\nEnter your choice: ";
 
-  /* Set up the TCP listening socket dynamically */
   int tcp_sock;
   struct sockaddr_in reg_addr;
   socklen_t alen = sizeof(struct sockaddr_in);
@@ -284,7 +268,7 @@ int main(int argc, char **argv) {
 
   bzero((char *)&reg_addr, sizeof(struct sockaddr_in));
   reg_addr.sin_family = AF_INET;
-  reg_addr.sin_port = htons(0); /* Port 0 tells OS to choose dynamically */
+  reg_addr.sin_port = htons(0);
   reg_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
   if (bind(tcp_sock, (struct sockaddr *)&reg_addr, sizeof(reg_addr)) == -1) {
@@ -293,11 +277,23 @@ int main(int argc, char **argv) {
   }
   listen(tcp_sock, 5);
 
-  /* Retrieve the dynamically assigned port number */
   getsockname(tcp_sock, (struct sockaddr *)&reg_addr, &alen);
   int my_tcp_port = ntohs(reg_addr.sin_port);
 
   printf("[ Started Local Peer Server on TCP port %d ]\n\n", my_tcp_port);
+
+  /* Ask for this peer's own name once at startup */
+  while (1) {
+    printf("Enter your Peer Name (max 10 chars): ");
+    if (fgets(input_buffer, BUFLEN, stdin) != NULL) {
+      input_buffer[strcspn(input_buffer, "\n")] = '\0';
+      if (strlen(input_buffer) > 0 && strlen(input_buffer) <= 10) {
+        strcpy(my_peer_name, input_buffer);
+        break;
+      }
+      printf("[ Error: Peer Name must be 1-10 characters. ]\n");
+    }
+  }
   
   printf("Enter the IP address of the index server: ");
   if (fgets(host, BUFLEN, stdin) != NULL) {
@@ -309,13 +305,11 @@ int main(int argc, char **argv) {
     index_port = atoi(input_buffer);
   }
 
-  /* Setup fd_sets for the select system call */
   fd_set rfds, afds;
   FD_ZERO(&afds);
-  FD_SET(0, &afds);         /* Listen to stdin (fd 0) */
-  FD_SET(tcp_sock, &afds);  /* Listen to TCP server socket */
+  FD_SET(0, &afds);
+  FD_SET(tcp_sock, &afds);
 
-  /* Prevent zombie processes when child forks finish their downloads */
   signal(SIGCHLD, SIG_IGN); 
 
   int print_menu = 1;
@@ -327,7 +321,6 @@ int main(int argc, char **argv) {
       print_menu = 0;
     }
 
-    /* Reset rfds to the base set of watched descriptors before calling select */
     rfds = afds;
 
     if (select(FD_SETSIZE, &rfds, NULL, NULL, NULL) < 0) {
@@ -335,14 +328,12 @@ int main(int argc, char **argv) {
       break;
     }
 
-    /* EVENT 1: Incoming TCP download connection */
     if (FD_ISSET(tcp_sock, &rfds)) {
       struct sockaddr_in client;
       socklen_t client_len = sizeof(client);
       int new_sd = accept(tcp_sock, (struct sockaddr *)&client, &client_len);
       
       if (new_sd >= 0) {
-        /* Handle file transfer in a child process so it doesn't block UI */
         if (fork() == 0) {
           close(tcp_sock);
           handle_download_request(new_sd);
@@ -352,7 +343,6 @@ int main(int argc, char **argv) {
       }
     }
 
-    /* EVENT 2: User input from the keyboard */
     if (FD_ISSET(0, &rfds)) {
       if (fgets(input_buffer, BUFLEN, stdin) == NULL) {
         break;
@@ -370,7 +360,7 @@ int main(int argc, char **argv) {
       switch(choice) {
         case 1:
           printf("\n[ Action: Registering content... ]\n");
-          register_content(host, index_port, my_tcp_port);
+          register_content(host, index_port, my_peer_name, my_tcp_port);
           break;
         case 2:
           printf("\n[ Action: Searching for content... ]\n");
@@ -378,7 +368,7 @@ int main(int argc, char **argv) {
             char dummy_ip[21];
             int dummy_port;
             char dummy_file[11];
-            search_content(host, index_port, dummy_ip, &dummy_port, dummy_file);
+            search_content(host, index_port, my_peer_name, dummy_ip, &dummy_port, dummy_file);
           }
           break;
         case 3:
@@ -388,9 +378,14 @@ int main(int argc, char **argv) {
             int peer_port;
             char filename[11];
             
-            if (search_content(host, index_port, peer_ip, &peer_port, filename) == 1) {
+            if (search_content(host, index_port, my_peer_name, peer_ip, &peer_port, filename) == 1) {
               printf("[ Initiating connection to %s:%d to download '%s'... ]\n", peer_ip, peer_port, filename);
-              download_content(peer_ip, peer_port, filename);
+              if (download_content(peer_ip, peer_port, filename) == 1) {
+                /* Automatically register this peer as a content server after download */
+                if (send_registration_pdu(host, index_port, my_peer_name, filename, my_tcp_port)) {
+                  printf("[ Auto-Registered: This peer is now serving '%s'. ]\n", filename);
+                }
+              }
             } else {
               printf("[ Download aborted: Could not locate content on the index server. ]\n");
             }
@@ -406,7 +401,6 @@ int main(int argc, char **argv) {
           printf("\n[ Error: Invalid choice. Please enter a number 1-5 or 'exit'. ]\n");
       }
       
-      /* Trigger the menu to reprint after handling the user's command */
       print_menu = 1;
     }
   }
