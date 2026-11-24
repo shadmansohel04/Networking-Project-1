@@ -12,13 +12,37 @@
 
 #define MAX_DATA_LEN 100
 #define BUFLEN 256
+#define MAX_LOCAL_FILES 50
 
 typedef struct {
   char type;
   char data[MAX_DATA_LEN];
 } PDU;
 
-/* Helper function to send an R-type PDU for a given peer_name and content_name */
+/* Helper to track locally registered files so we can de-register all on quit */
+void add_local_file(char local_files[][11], int *count, const char *filename) {
+  for (int i = 0; i < *count; i++) {
+    if (strcmp(local_files[i], filename) == 0) return;
+  }
+  if (*count < MAX_LOCAL_FILES) {
+    strcpy(local_files[*count], filename);
+    (*count)++;
+  }
+}
+
+void remove_local_file(char local_files[][11], int *count, const char *filename) {
+  for (int i = 0; i < *count; i++) {
+    if (strcmp(local_files[i], filename) == 0) {
+      for (int j = i; j < *count - 1; j++) {
+        strcpy(local_files[j], local_files[j + 1]);
+      }
+      (*count)--;
+      return;
+    }
+  }
+}
+
+/* Helper function to send an R-type PDU */
 int send_registration_pdu(const char *server_ip, int server_port, const char *peer_name, const char *content_name, int my_tcp_port) {
   int udp_sock;
   struct sockaddr_in index_addr;
@@ -52,8 +76,42 @@ int send_registration_pdu(const char *server_ip, int server_port, const char *pe
   return 0;
 }
 
-/* Interactive registration: prompts for content name (and allows changing peer name on conflict) */
-void register_content(const char *server_ip, int server_port, char *my_peer_name, int my_tcp_port) {
+/* Helper function to send a T-type PDU for de-registration */
+int send_deregistration_pdu(const char *server_ip, int server_port, const char *peer_name, const char *content_name) {
+  int udp_sock;
+  struct sockaddr_in index_addr;
+  PDU spdu, rpdu;
+
+  if ((udp_sock = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
+    perror("Cannot create UDP socket");
+    return 0;
+  }
+
+  bzero((char *)&index_addr, sizeof(struct sockaddr_in));
+  index_addr.sin_family = AF_INET;
+  index_addr.sin_port = htons(server_port);
+  inet_aton(server_ip, &index_addr.sin_addr);
+
+  spdu.type = 'T';
+  bzero(spdu.data, MAX_DATA_LEN);
+  snprintf(spdu.data, MAX_DATA_LEN, "%-10s%-10s", peer_name, content_name);
+
+  sendto(udp_sock, &spdu, sizeof(PDU), 0, (struct sockaddr *)&index_addr, sizeof(index_addr));
+
+  socklen_t index_len = sizeof(index_addr);
+  recvfrom(udp_sock, &rpdu, sizeof(PDU), 0, (struct sockaddr *)&index_addr, &index_len);
+  close(udp_sock);
+
+  if (rpdu.type == 'A') {
+    return 1;
+  } else if (rpdu.type == 'E') {
+    printf("[ Error from Index Server: %s ]\n", rpdu.data);
+  }
+  return 0;
+}
+
+/* Interactive registration */
+void register_content(const char *server_ip, int server_port, char *my_peer_name, int my_tcp_port, char local_files[][11], int *local_count) {
   char content_name[11];
   char input_buf[256];
   int valid_content = 0;
@@ -73,6 +131,7 @@ void register_content(const char *server_ip, int server_port, char *my_peer_name
 
   while (1) {
     if (send_registration_pdu(server_ip, server_port, my_peer_name, content_name, my_tcp_port)) {
+      add_local_file(local_files, local_count, content_name);
       printf("\n[ Success: '%s' registered under peer '%s'! ]\n", content_name, my_peer_name);
       break;
     } else {
@@ -87,7 +146,96 @@ void register_content(const char *server_ip, int server_port, char *my_peer_name
   }
 }
 
-/* Only prompts for Content Name; automatically attaches my_peer_name to the S-type PDU */
+/* Interactive de-registration (Option 5) */
+void deregister_content(const char *server_ip, int server_port, const char *my_peer_name, char local_files[][11], int *local_count) {
+  char content_name[11];
+  char input_buf[256];
+
+  printf("Enter Content Name to de-register (max 10 chars): ");
+  if (fgets(input_buf, sizeof(input_buf), stdin) != NULL) {
+    input_buf[strcspn(input_buf, "\n")] = '\0';
+    if (strlen(input_buf) == 0 || strlen(input_buf) > 10) {
+      printf("[ Error: Content Name must be 1-10 characters. ]\n");
+      return;
+    }
+    strcpy(content_name, input_buf);
+  }
+
+  if (send_deregistration_pdu(server_ip, server_port, my_peer_name, content_name)) {
+    remove_local_file(local_files, local_count, content_name);
+    printf("\n[ Success: '%s' de-registered from Index Server! ]\n", content_name);
+  } else {
+    printf("\n[ Failed to de-register '%s'. ]\n", content_name);
+  }
+}
+
+/* De-registers all tracked content when the user quits */
+void deregister_all_on_quit(const char *server_ip, int server_port, const char *my_peer_name, char local_files[][11], int *local_count) {
+  if (*local_count == 0) return;
+
+  printf("[ De-registering %d registered file(s) before quitting... ]\n", *local_count);
+  for (int i = 0; i < *local_count; i++) {
+    if (send_deregistration_pdu(server_ip, server_port, my_peer_name, local_files[i])) {
+      printf("  -> De-registered '%s'\n", local_files[i]);
+    }
+  }
+  *local_count = 0;
+}
+
+/* List on-line registered content (Option 4 - O-type PDU) */
+void list_online_content(const char *server_ip, int server_port) {
+  int udp_sock;
+  struct sockaddr_in index_addr;
+  PDU spdu, rpdu;
+
+  if ((udp_sock = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
+    perror("Cannot create UDP socket");
+    return;
+  }
+
+  bzero((char *)&index_addr, sizeof(struct sockaddr_in));
+  index_addr.sin_family = AF_INET;
+  index_addr.sin_port = htons(server_port);
+  inet_aton(server_ip, &index_addr.sin_addr);
+
+  bzero(&spdu, sizeof(PDU));
+  spdu.type = 'O';
+
+  sendto(udp_sock, &spdu, sizeof(PDU), 0, (struct sockaddr *)&index_addr, sizeof(index_addr));
+
+  socklen_t index_len = sizeof(index_addr);
+  int count = 0;
+
+  printf("\n=== On-Line Registered Content ===\n");
+  while (1) {
+    bzero(&rpdu, sizeof(PDU));
+    if (recvfrom(udp_sock, &rpdu, sizeof(PDU), 0, (struct sockaddr *)&index_addr, &index_len) < 0) {
+      perror("Error receiving content list");
+      break;
+    }
+
+    if (rpdu.type == 'O') {
+      count++;
+      printf("  %d. %s\n", count, rpdu.data);
+    } else if (rpdu.type == 'A') {
+      /* End of list signal */
+      if (count == 0) {
+        printf("  (No content currently registered on the server)\n");
+      }
+      break;
+    } else if (rpdu.type == 'E') {
+      printf("  [ Error: %s ]\n", rpdu.data);
+      break;
+    } else {
+      printf("  [ Error: Unexpected response from server ]\n");
+      break;
+    }
+  }
+  printf("==================================\n");
+
+  close(udp_sock);
+}
+
 int search_content(const char *server_ip, int server_port, const char *my_peer_name, char *out_ip, int *out_port, char *out_filename) {
   int udp_sock;
   struct sockaddr_in index_addr;
@@ -114,7 +262,6 @@ int search_content(const char *server_ip, int server_port, const char *my_peer_n
 
   spdu.type = 'S';
   bzero(spdu.data, MAX_DATA_LEN);
-  /* Pack our own peer name and the requested content name */
   snprintf(spdu.data, MAX_DATA_LEN, "%-10s%-10s", my_peer_name, content_name);
 
   sendto(udp_sock, &spdu, sizeof(PDU), 0, (struct sockaddr *)&index_addr, sizeof(index_addr));
@@ -189,7 +336,7 @@ int download_content(const char *ip, int port, const char *filename) {
       }
       printf("\n");
     } 
-    else if (rpdu.type == 'C') { /* C-type PDU for Content Data */
+    else if (rpdu.type == 'C') {
       FILE *fp = fopen(filename, "wb");
       if (fp != NULL) {
         fwrite(rpdu.data, 1, n - 1, fp);
@@ -227,7 +374,7 @@ void handle_download_request(int new_sd) {
       write(new_sd, &spdu, sizeof(PDU));
       printf("[ Peer Server: File not found. Error sent to peer. ]\n");
     } else {
-      spdu.type = 'C'; /* C-type PDU for Content Data */
+      spdu.type = 'C';
       int bytes_read;
       
       while ((bytes_read = fread(spdu.data, 1, MAX_DATA_LEN - 1, fp)) > 0) {
@@ -246,6 +393,9 @@ int main(int argc, char **argv) {
   int index_port;
   char my_peer_name[11];
   char input_buffer[BUFLEN];
+
+  char local_files[MAX_LOCAL_FILES][11];
+  int local_count = 0;
   
   const char *menu_text = 
     "\n--- P2P Application Menu ---\n"
@@ -282,7 +432,6 @@ int main(int argc, char **argv) {
 
   printf("[ Started Local Peer Server on TCP port %d ]\n\n", my_tcp_port);
 
-  /* Ask for this peer's own name once at startup */
   while (1) {
     printf("Enter your Peer Name (max 10 chars): ");
     if (fgets(input_buffer, BUFLEN, stdin) != NULL) {
@@ -351,6 +500,7 @@ int main(int argc, char **argv) {
       input_buffer[strcspn(input_buffer, "\n")] = '\0';
 
       if (strcmp(input_buffer, "exit") == 0) {
+        deregister_all_on_quit(host, index_port, my_peer_name, local_files, &local_count);
         printf("Exiting application. Goodbye!\n");
         break;
       }
@@ -360,7 +510,7 @@ int main(int argc, char **argv) {
       switch(choice) {
         case 1:
           printf("\n[ Action: Registering content... ]\n");
-          register_content(host, index_port, my_peer_name, my_tcp_port);
+          register_content(host, index_port, my_peer_name, my_tcp_port, local_files, &local_count);
           break;
         case 2:
           printf("\n[ Action: Searching for content... ]\n");
@@ -381,8 +531,8 @@ int main(int argc, char **argv) {
             if (search_content(host, index_port, my_peer_name, peer_ip, &peer_port, filename) == 1) {
               printf("[ Initiating connection to %s:%d to download '%s'... ]\n", peer_ip, peer_port, filename);
               if (download_content(peer_ip, peer_port, filename) == 1) {
-                /* Automatically register this peer as a content server after download */
                 if (send_registration_pdu(host, index_port, my_peer_name, filename, my_tcp_port)) {
+                  add_local_file(local_files, &local_count, filename);
                   printf("[ Auto-Registered: This peer is now serving '%s'. ]\n", filename);
                 }
               }
@@ -393,9 +543,11 @@ int main(int argc, char **argv) {
           break;
         case 4:
           printf("\n[ Action: Listing registered content... ]\n");
+          list_online_content(host, index_port);
           break;
         case 5:
           printf("\n[ Action: De-registering content... ]\n");
+          deregister_content(host, index_port, my_peer_name, local_files, &local_count);
           break;
         default:
           printf("\n[ Error: Invalid choice. Please enter a number 1-5 or 'exit'. ]\n");
