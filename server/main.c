@@ -7,15 +7,10 @@
 #include <strings.h>
 #include <string.h>
 #include <unistd.h>
+#include "pdu.h"
 
 #define SERVER_UDP_PORT 3000
-#define MAX_DATA_LEN 100
 #define MAX_REG 100
-
-typedef struct {
-  char type;
-  char data[MAX_DATA_LEN];
-} PDU;
 
 typedef struct {
   char peer_name[11];

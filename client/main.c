@@ -9,15 +9,7 @@
 #include <string.h>
 #include <signal.h>
 #include <sys/select.h>
-
-#define MAX_DATA_LEN 100
-#define BUFLEN 256
-#define MAX_LOCAL_FILES 50
-
-typedef struct {
-  char type;
-  char data[MAX_DATA_LEN];
-} PDU;
+#include "pdu.h"
 
 /* Helper to track locally registered files so we can de-register all on quit */
 void add_local_file(char local_files[][11], int *count, const char *filename) {
