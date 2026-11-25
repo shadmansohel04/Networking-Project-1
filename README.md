@@ -16,18 +16,13 @@ A peer-to-peer (P2P) file distribution and index system implemented in C with PO
 
 ## Compilation
 
-You can compile using `make` from the project root or inside individual directories:
+Compile using `gcc`:
 
 ```bash
-# Compile both server and client
-make
-
-# Or compile individually
-cd server && make
-cd client && make
-
-# Direct compilation with gcc also works directly:
+# Compile server
 gcc -o server/server server/main.c
+
+# Compile client
 gcc -o client/client client/main.c
 ```
 
